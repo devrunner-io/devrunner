@@ -1,2 +1,2 @@
-# devrunner
-docker job deployment cli
+# devrunner [coming soon]
+A CLI for peer container deployment with devrunner

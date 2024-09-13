@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "devrunner"
+version = "0.1.0.dev"
+description = "A CLI for peer container deployment with devrunner"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.8"
+authors = [
+    {name = "Tim Huntley", email = "admin@devrunner.io"},
+]
+dependencies = [
+    "setuptools",
+    "requests",
+    "fastapi==0.114.1",
+    "uvicorn",
+    "psutil==6.0.0",
+    "docker"
+]
+
+[project.urls]
+homepage = "https://github.com/devrunner-io/devrunner"
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[project.scripts]
+devrunner = "devrunner.cli:main"
