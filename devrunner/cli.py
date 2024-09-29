@@ -1,213 +1,146 @@
 import argparse
-import subprocess
-import sys
-import textwrap
+from .utils import *
+from getpass import getpass
+import requests
 
-def build_docker_image(tag, path="."):
-    """
-    Function to build a Docker image using the specified tag and path.
-    """
-    try:
-        print(f"Building Docker image with tag '{tag}' from path '{path}'...")
+import os
+import json
+import stat
+import platform
 
-        # clean up any existing images if they exist
-        subprocess.run(['docker', 'rmi', '-f', tag], capture_output=True)
+# Generic store function
+def store_data(file_name, data):
+    home_dir = os.path.expanduser("~")
+    file_path = os.path.join(home_dir, ".devrunner", file_name)
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
 
-        # build the image
-        subprocess.run(['docker', 'build', '-t', tag, path, '--quiet'], check=True)
+    # Write the data to the file
+    with open(file_path, 'w') as f:
+        json.dump(data, f)
 
-        print(f"Docker image '{tag}' built successfully.")
-    except subprocess.CalledProcessError as e:
-        print(f"Error building Docker image: {e}")
-        sys.exit(1)
-
-def generate_tag_name(args):
-    # get name from the .drconfig file
-    with open(".drconfig", "r") as f:
-        lines = f.readlines()
-        for line in lines:
-            if "name" in line:
-                project_name = line.split("=")[1].strip()
-                break
-
-    # return the tag name
-    return f"devrunner-{project_name}-worker"
-
-def push_docker_image(tag):
-    """
-    Pushes a Docker image to the remote registry.
-    """
-    print(f"Pushing Docker image with tag: {tag}")
-    subprocess.run(["docker", "push", tag], check=True)
-
-def deploy(args):
-    """
-    Deploy command to build Docker images.
-    """
-
-    tag = args.tag if args.tag else generate_tag_name(args)
-
-    full_tag = f"cr.devrunner.io/testing:{tag}"
-
-    build_docker_image(tag=full_tag, path=args.path)
-    push_docker_image(full_tag)
-
-def worker(args):
-    """
-    Run command to run Docker containers.
-    """
-
-    if not args.tag:
-        # get the tag from the .drconfig file
-        with open(".drconfig", "r") as f:
-            lines = f.readlines()
-            for line in lines:
-                if "name" in line:
-                    project_name = line.split("=")[1].strip()
-                    break
-    
-        tag = f"devrunner-{project_name}-worker"
+    # Set file permissions: read/write for the user only (for Linux/macOS)
+    if platform.system() != "Windows":
+        os.chmod(file_path, 0o600)
     else:
-        tag = args.tag
+        os.chmod(file_path, stat.S_IWRITE)  # Ensure it's writable for Windows
 
-    print(f"running worker '{tag}'...")
-    subprocess.run(['docker', 'run', tag], check=True)
+# Generic delete function
+def delete_data(file_name):
+    file_path = os.path.expanduser(f"~/.devrunner/{file_name}")
+    if os.path.exists(file_path):
+        os.remove(file_path)
 
-def create_project(args):
-    # create a directory with the project name
-    project_name = args.name
+# Reuse store_data and delete_data for tokens and other user data
+def store_access_token(token):
+    store_data("__a_t__.json", {"token": token})
 
-    # stop if the directory already exists
-    if subprocess.run(['ls', project_name], capture_output=True).returncode == 0:
-        if not args.replace:
-            print(f"Project {project_name} already exists!")
-            sys.exit(1)
-        else:
-            subprocess.run(['rm', '-rf', project_name])
+def store_refresh_token(token):
+    store_data("__r_t__.json", {"token": token})
 
-    # check the name doesn't exist
-    subprocess.run(['mkdir', project_name])
-    # create a Dockerfile with comments
+def store_email(email):
+    store_data("__e__.json", {"token": email})
 
-    python_version = "3.11"
+def get_data(file_name):
+    file_path = os.path.expanduser(f"~/.devrunner/{file_name}")
+    if os.path.exists(file_path):
+        with open(file_path) as f:
+            return json.load(f).get("token")
+    return None
 
-    dockerfile = textwrap.dedent(f"""\
-        FROM python:{python_version}-slim
-        
-        # Set the working directory
-        WORKDIR /{project_name}
-        
-        # Copy the current directory contents into the container at /app
-        COPY {project_name} /{project_name}
-        
-        # Install the dependencies
-        RUN pip install --no-cache-dir -r requirements.txt
-        
-        # Expose port 80
-        EXPOSE 80
-        
-        # Define the command to run the application
-        CMD ["python", "app.py"]
-    """)
+def get_access_token():
+    return get_data("__a_t__.json")
 
-    with open(f"Dockerfile", "w") as f:
-        f.write(dockerfile)
+def get_refresh_token():
+    return get_data("__r_t__.json")
 
-    # create an empty requirements.txt
-    with open(f"{project_name}/requirements.txt", "w") as f:
-        f.write("")
-    
-    # create app.py with no extra indentation
-    app_py = textwrap.dedent("""\
-        import time
-                             
-        def main():
-            for i in range(10):
-                print(f"{i}")
-                time.sleep(0.3)
-        
-        if __name__ == "__main__":
-            main()
-    """)
+def get_email():
+    return get_data("__e__.json")
 
-    with open(f"{project_name}/app.py", "w") as f:
-        f.write(app_py)
+def delete_access_token():
+    delete_data("__a_t__.json")
 
-    # create a .drconfig file with the project name and python version
-    drconfig = textwrap.dedent(f"""\
-        [project]
-        name = {project_name}
-        python_version = {python_version}
-        memory_limit = 512M
-        cpu_limit = 0.5
-    """)
+def delete_refresh_token():
+    delete_data("__r_t__.json")
 
-    with open(f".drconfig", "w") as f:
-        f.write(drconfig)
-    
-    print(f"Created {project_name}")
+def refresh_token():
+    response = requests.post(
+        "http://localhost:8000/refresh-token",
+        cookies={"refresh_token": get_refresh_token()}
+    )
 
-def start_server(args):
-    port = str(args.port)
-    
-    # Check if the port is already in use
-    try:
-        subprocess.check_output(['lsof', '-t', f'-i:{port}'])
-        # If lsof returns output, it means the port is in use
-        print(f"Error: Port {port} is already in use. Cannot start server.")
-        sys.exit(1)  # Exit with error code
-    except subprocess.CalledProcessError:
-        # If lsof raises an error, it means the port is not in use, so we can start the server
-        subprocess.Popen(
-            ['uvicorn', 'devrunner.server.server:app', '--reload', '--host', '0.0.0.0', '--port', port],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    if response.status_code == 200:
+        store_access_token(response.json().get("token"))
+        store_refresh_token(response.cookies.get("refresh_token"))
+        return True
+
+    return False
+
+def login(args):
+    token = get_access_token()
+
+    if token:
+        response = requests.get(
+            "http://localhost:8000/check-token",
+            headers={"Authorization": f"Bearer {token}"}
         )
-        print(f"devrunner is ready to accept requests on port {port}")
-
-def stop_server(args):
-
-    try:
-        # Use pgrep to find uvicorn processes that are using the specified port
-        pids = subprocess.check_output(['pgrep', '-fl', 'uvicorn']).decode().strip().split('\n')
-
-        uvicorn_pids = []
-        ports = []
-        for process_info in pids:
-            if f'devrunner' in process_info:
-                pid = process_info.split()[0]  # The first part of the output is the PID
-                uvicorn_pids.append(pid)
-                ports.append(process_info.split()[-1])  # The last part of the output is the port
-        
-        if not uvicorn_pids:
-            print(f"No uvicorn server running.")
+        if response.status_code == 200:
+            print("You are already logged in.")
             return
+        elif response.status_code == 401:
+            delete_access_token()
 
-        # Kill each uvicorn process individually
-        for uvicorn_pid, port in zip(uvicorn_pids, ports):
-            subprocess.run(['kill', uvicorn_pid])
-            print(f"devrunner listener on port {port} was terminated.")
-    
-    except subprocess.CalledProcessError:
-        print(f"No uvicorn server running on port '{port}'.")
+    if refresh_token():
+        print("You are already logged in.")
+        return
+
+    existing_email = get_email()
+    if existing_email:
+        email = input(f"Email ({existing_email}): ") or existing_email
+    else:
+        email = input("Email: ")
+    password = getpass("Password: ")
+
+    response = requests.post(
+        "http://localhost:8000/login",
+        json={"email": email, "password": password}
+    )
+
+    if response.status_code == 200:
+        print("Login successful.")
+        store_access_token(response.json().get("token"))
+        store_refresh_token(response.cookies.get("refresh_token"))
+        store_email(email)
+    else:
+        print("Login failed.")
+    return response.json()
+
+def logout(args):
+    delete_access_token()
+    delete_refresh_token()
+    print("Logged out successfully.")
 
 def main():
     parser = argparse.ArgumentParser(prog="devrunner", description="Deploy and run Docker containers.")
     subparsers = parser.add_subparsers(title="commands", description="Available commands", help="Sub-command help")
-    
-    # Define the 'deploy' command
+
+    parser_login = subparsers.add_parser("login", help="Login to devrunner.")
+    parser_login.set_defaults(func=login)
+
+    parser_logout = subparsers.add_parser("logout", help="Logout from devrunner.")
+    parser_logout.set_defaults(func=logout)
+
     parser_deploy = subparsers.add_parser("deploy", help="Build Docker image.")
-    parser_deploy.add_argument("-t", "--tag", required=False, help="Tag for the Docker image.")
     parser_deploy.add_argument("-p", "--path", default=".", help="Path to the Dockerfile directory (default is current directory).")
     parser_deploy.set_defaults(func=deploy)
-    
-    # # Define the 'run' command
+
     parser_run = subparsers.add_parser("execute", help="Run Docker container.")
     parser_run.add_argument("-t", "--tag", required=False, help="Tag of the Docker image to run.")
-    parser_run.set_defaults(func=worker)
+    parser_run.set_defaults(func=execute)
 
     parser_id = subparsers.add_parser("create", help="create a deployment project")
     parser_id.add_argument("-n", "--name", required=True, help="Name of the project")
     parser_id.add_argument("-r", "--replace", action="store_true", help="Replaces the project if it already exists")
+    parser_id.add_argument('python_version', type=str, default="python==3.12", help="Specify the Python version (e.g., python==3.12)")
     parser_id.set_defaults(func=create_project)
 
     parser_server = subparsers.add_parser("ready", help="Start the server")
@@ -217,14 +150,12 @@ def main():
     parser_stop = subparsers.add_parser("stop", help="Stop the server")
     parser_stop.set_defaults(func=stop_server)
 
-    # Parse the arguments and call the respective function
     args = parser.parse_args()
 
     if hasattr(args, 'func'):
         args.func(args)
     else:
         parser.print_help()
-
 
 if __name__ == "__main__":
     main()
