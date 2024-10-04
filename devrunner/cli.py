@@ -115,9 +115,16 @@ def login(args):
     return response.json()
 
 def logout(args):
-    delete_access_token()
-    delete_refresh_token()
-    print("Logged out successfully.")
+    response = requests.post(
+        "http://localhost:8000/logout",
+        headers={"Authorization": f"Bearer {get_access_token()}"}
+    )
+    if response.status_code == 200:
+        delete_access_token()
+        delete_refresh_token()
+        print("Logged out successfully.")
+    else:
+        print("Logout failed.")
 
 def main():
     parser = argparse.ArgumentParser(prog="devrunner", description="Deploy and run Docker containers.")
